@@ -27,8 +27,7 @@ htmlcov/
 *.pem
 *.key
 
-# Competition data and generated outputs
-Dataset/*.csv
+# Generated outputs
 data/
 outputs/
 submissions/
