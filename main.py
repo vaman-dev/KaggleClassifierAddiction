@@ -35,8 +35,9 @@ from src.cross_validation import (
     run_xgboost_cross_validation,
     print_cross_validation_summary,
 )
+from src.feature_experiments import run_feature_group_experiments
+from src.feature_engineering import engineer_frozen_features
 
-from src.hyperparameter_tuning import run_hyperparameter_tuning_pipeline
 
 
 RUN_GENERAL_EDA = False
@@ -47,6 +48,7 @@ RUN_CURRENT_CHAMPION = True
 RUN_CROSS_VALIDATION = False
 
 RUN_HYPERPARAMETER_TUNING = False
+RUN_FEATURE_EXPERIMENTS = False
 
 
 XGBOOST_STRATEGIES = {
@@ -58,7 +60,11 @@ XGBOOST_STRATEGIES = {
 
 CURRENT_CHAMPION_NAME = "XGBoost + Native NaN"
 CURRENT_CHAMPION_STRATEGY = "native"
-CURRENT_CHAMPION_AUC = 0.964272
+BASELINE_HOLDOUT_ROC_AUC = 0.958919
+BASELINE_CV_MEAN_ROC_AUC = 0.964272
+BASELINE_CV_STD_ROC_AUC = 0.000531
+FROZEN_FEATURE_CV_MEAN_ROC_AUC = 0.964673
+FROZEN_FEATURE_CV_STD_ROC_AUC = 0.000499
 
 
 def print_section(
@@ -77,13 +83,33 @@ def print_project_status() -> None:
     )
 
     print(
-        f"Champion model: "
+        f"Baseline model: "
         f"{CURRENT_CHAMPION_NAME}"
     )
 
     print(
-        f"Champion validation ROC-AUC: "
-        f"{CURRENT_CHAMPION_AUC:.6f}"
+        f"Baseline holdout ROC-AUC: "
+        f"{BASELINE_HOLDOUT_ROC_AUC:.6f}"
+    )
+
+    print(
+        f"Baseline 5-fold CV mean ROC-AUC: "
+        f"{BASELINE_CV_MEAN_ROC_AUC:.6f}"
+    )
+
+    print(
+        f"Baseline 5-fold CV standard deviation: "
+        f"{BASELINE_CV_STD_ROC_AUC:.6f}"
+    )
+
+    print(
+        f"Frozen feature-set 5-fold CV mean ROC-AUC: "
+        f"{FROZEN_FEATURE_CV_MEAN_ROC_AUC:.6f}"
+    )
+
+    print(
+        f"Frozen feature-set 5-fold CV standard deviation: "
+        f"{FROZEN_FEATURE_CV_STD_ROC_AUC:.6f}"
     )
 
     print(
@@ -94,7 +120,7 @@ def print_project_status() -> None:
     print()
     print("Next phase:")
     print(
-        "Stratified K-Fold Cross-Validation"
+        "Optuna Hyperparameter Tuning"
     )
 
 
@@ -351,6 +377,21 @@ def main() -> None:
     # Phase 5 - Cross-validation
     # =====================================================
 
+    if RUN_HYPERPARAMETER_TUNING:
+        from src.hyperparameter_tuning import run_optuna_tuning
+
+        X_full, y_full, _ = separate_train_data(competition_train_df)
+        X_full = engineer_frozen_features(X_full)
+        run_optuna_tuning(X_full, y_full, n_trials=3, n_splits=2)
+        return
+
+    if RUN_FEATURE_EXPERIMENTS:
+        X_full, y_full, _ = separate_train_data(competition_train_df)
+        comparison = run_feature_group_experiments(X_full, y_full)
+        print_section("FEATURE EXPERIMENT SUMMARY")
+        print(comparison.to_string(index=False))
+        return
+
     if RUN_CROSS_VALIDATION:
 
         (
@@ -360,6 +401,7 @@ def main() -> None:
         ) = separate_train_data(
             competition_train_df
         )
+        X_full = engineer_frozen_features(X_full)
 
         cv_results = (
             run_xgboost_cross_validation(
@@ -437,9 +479,6 @@ def main() -> None:
             y_validation,
         )
 
-    if RUN_HYPERPARAMETER_TUNING:
-
-        run_hyperparameter_tuning_pipeline()
 
 
 if __name__ == "__main__":

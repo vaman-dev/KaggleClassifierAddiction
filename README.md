@@ -6,9 +6,9 @@ The project uses an XGBoost classifier and optimizes for ROC-AUC, producing a pr
 
 ## Current champion
 
-| Model | Missing-value strategy | Validation ROC-AUC |
+| Model | Missing-value strategy | 5-fold CV mean ROC-AUC |
 | --- | --- | ---: |
-| XGBoost | Native NaN handling | **0.964272** |
+| XGBoost | Native NaN handling | **0.964272 ± 0.000531** |
 
 The champion configuration is defined in [`main.py`](main.py) and uses a reproducible random seed of `42`.
 

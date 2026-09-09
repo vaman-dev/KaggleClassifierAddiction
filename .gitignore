@@ -32,6 +32,8 @@ data/
 outputs/
 submissions/
 *.log
+feature_experiment_results.csv
+feature_retention_check.csv
 
 # Notebooks and editor/system files
 .ipynb_checkpoints/
