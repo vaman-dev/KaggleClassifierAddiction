@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -12,18 +13,36 @@ from src.config import RANDOM_STATE
 from src.xgboost_model import create_xgboost_model
 
 
-def run_xgboost_cross_validation(
+FoldIndices = list[tuple[np.ndarray, np.ndarray]]
+
+
+def create_stratified_folds(
     X: pd.DataFrame,
     y: pd.Series,
     *,
     n_splits: int = 5,
-) -> pd.DataFrame:
-
+) -> FoldIndices:
+    """Create the project's reproducible folds once for fair comparisons."""
     cross_validator = StratifiedKFold(
         n_splits=n_splits,
         shuffle=True,
         random_state=RANDOM_STATE,
     )
+    return list(cross_validator.split(X, y))
+
+
+def run_xgboost_cross_validation(
+    X: pd.DataFrame,
+    y: pd.Series,
+    *,
+    n_splits: int = 5,
+    model_params: dict[str, Any] | None = None,
+    fold_indices: FoldIndices | None = None,
+) -> pd.DataFrame:
+    if fold_indices is None:
+        fold_indices = create_stratified_folds(X, y, n_splits=n_splits)
+    elif len(fold_indices) != n_splits:
+        raise ValueError("fold_indices length must match n_splits.")
 
     fold_results = []
 
@@ -36,10 +55,7 @@ def run_xgboost_cross_validation(
         train_index,
         validation_index,
     ) in enumerate(
-        cross_validator.split(
-            X,
-            y,
-        ),
+        fold_indices,
         start=1,
     ):
 
@@ -91,6 +107,7 @@ def run_xgboost_cross_validation(
         model = create_xgboost_model(
             X_fold_train,
             missing_strategy="native",
+            model_params=model_params,
         )
 
         start_time = (
