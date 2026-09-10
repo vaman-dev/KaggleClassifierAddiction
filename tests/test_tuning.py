@@ -32,9 +32,12 @@ def fake_model():
 
 def test_final_cv_applies_best_params_to_every_fresh_fold(monkeypatch, data):
     factory = Mock(side_effect=lambda *a, **k: fake_model())
+    frozen_features = Mock(side_effect=lambda X: X)
     monkeypatch.setattr(cv, "create_xgboost_model", factory)
+    monkeypatch.setattr(tuning, "engineer_frozen_features", frozen_features)
     params = {"max_depth": 3, "gamma": 0.17}
     result = tuning.run_final_cross_validation(*data, best_params=params)
+    frozen_features.assert_called_once_with(data[0])
     assert factory.call_count == 5
     assert result["mean_auc"] == 0.5
     for call in factory.call_args_list:
@@ -53,6 +56,34 @@ def test_objective_reports_scores_and_applies_suggestions(monkeypatch, data):
     assert factory.call_count == 2
     for call in factory.call_args_list:
         assert call.kwargs["model_params"] == trial.params
+        assert "reg_alpha" in call.kwargs["model_params"]
+        assert "reg_lambda" in call.kwargs["model_params"]
+
+
+def test_optuna_tuning_uses_frozen_features(monkeypatch, data, tmp_path):
+    engineered_features = data[0].assign(frozen_usage_share=1.0)
+    feature_transformer = Mock(return_value=engineered_features)
+    observed_inputs = []
+
+    def fake_objective(trial, X, y, *, n_splits):
+        observed_inputs.append(X)
+        return 0.5
+
+    monkeypatch.setattr(tuning, "engineer_frozen_features", feature_transformer)
+    monkeypatch.setattr(tuning, "objective", fake_objective)
+
+    result = tuning.run_optuna_tuning(
+        *data,
+        n_trials=1,
+        n_splits=2,
+        output_dir=tmp_path,
+    )
+
+    feature_transformer.assert_called_once_with(data[0])
+    assert observed_inputs == [engineered_features]
+    assert result.best_score == 0.5
+    assert (tmp_path / "optuna_trials.csv").exists()
+    assert (tmp_path / "best_params.json").exists()
 
 
 def test_pruning_stops_remaining_folds(monkeypatch, data):

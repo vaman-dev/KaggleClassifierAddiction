@@ -378,11 +378,10 @@ def main() -> None:
     # =====================================================
 
     if RUN_HYPERPARAMETER_TUNING:
-        from src.hyperparameter_tuning import run_optuna_tuning
+        from src.hyperparameter_tuning import run_tuning_and_final_validation
 
         X_full, y_full, _ = separate_train_data(competition_train_df)
-        X_full = engineer_frozen_features(X_full)
-        run_optuna_tuning(X_full, y_full, n_trials=3, n_splits=2)
+        run_tuning_and_final_validation(X_full, y_full)
         return
 
     if RUN_FEATURE_EXPERIMENTS:

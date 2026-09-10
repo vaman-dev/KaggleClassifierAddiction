@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -11,9 +13,15 @@ import pandas as pd
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold
 
-from src.config import RANDOM_STATE
+from src.config import PROJECT_ROOT, RANDOM_STATE
 from src.cross_validation import run_xgboost_cross_validation, summarize_cross_validation
+from src.feature_engineering import engineer_frozen_features
 from src.xgboost_model import create_xgboost_model
+
+
+FROZEN_FEATURE_BENCHMARK_MEAN_AUC = 0.964673
+FROZEN_FEATURE_BENCHMARK_STD_AUC = 0.000499
+DEFAULT_TUNING_OUTPUT_DIR = PROJECT_ROOT / "outputs" / "hyperparameter_tuning"
 
 
 # ---------------------------------------------------------
@@ -25,6 +33,13 @@ class TuningResult:
     best_params: dict[str, Any]
     best_score: float
     study: optuna.Study
+
+
+@dataclass
+class FinalTuningResult:
+    tuning: TuningResult
+    final_cv: dict[str, Any]
+    beats_frozen_feature_benchmark: bool
 
 
 # ---------------------------------------------------------
@@ -162,14 +177,17 @@ def run_optuna_tuning(
     X: pd.DataFrame,
     y: pd.Series,
     *,
-    n_trials: int = 3,
-    n_splits: int = 2,
+    n_trials: int = 25,
+    n_splits: int = 3,
+    output_dir: Path = DEFAULT_TUNING_OUTPUT_DIR,
 ) -> TuningResult:
     """
-    Run a small Optuna study.
+    Tune the frozen feature-engineered model with TPE and pruning.
 
-    Start small while validating the tuning infrastructure.
+    The selected candidate must still pass a separate five-fold confirmation.
     """
+
+    X_engineered = engineer_frozen_features(X)
 
     sampler = optuna.samplers.TPESampler(
         seed=RANDOM_STATE,
@@ -191,7 +209,7 @@ def run_optuna_tuning(
     study.optimize(
         lambda trial: objective(
             trial,
-            X,
+            X_engineered,
             y,
             n_splits=n_splits,
         ),
@@ -208,6 +226,7 @@ def run_optuna_tuning(
     for state in (optuna.trial.TrialState.COMPLETE, optuna.trial.TrialState.PRUNED,
                   optuna.trial.TrialState.FAIL):
         print(f"{state.name} trials: {sum(t.state == state for t in study.trials)}")
+    print(f"Best trial number: {study.best_trial.number}")
     print(f"Best CV ROC-AUC  : {study.best_value:.6f}")
     print(f"Elapsed time     : {elapsed:.2f}s")
 
@@ -217,11 +236,13 @@ def run_optuna_tuning(
     for name, value in study.best_params.items():
         print(f"  {name}: {value}")
 
-    return TuningResult(
+    result = TuningResult(
         best_params=study.best_params,
         best_score=float(study.best_value),
         study=study,
     )
+    save_optuna_results(result, output_dir=output_dir)
+    return result
 
 
 def run_final_cross_validation(
@@ -230,8 +251,121 @@ def run_final_cross_validation(
     best_params: dict[str, Any],
     n_splits: int = 5,
 ) -> dict[str, Any]:
-    """Evaluate selected parameters on each fold; do not fit on all data yet."""
+    """Confirm selected parameters on frozen features with independent CV."""
+    X_engineered = engineer_frozen_features(X_full)
     results = run_xgboost_cross_validation(
-        X_full, y_full, n_splits=n_splits, model_params=best_params,
+        X_engineered, y_full, n_splits=n_splits, model_params=best_params,
     )
     return {"cv_results": results, **summarize_cross_validation(results)}
+
+
+def run_tuning_and_final_validation(
+    X: pd.DataFrame,
+    y: pd.Series,
+    *,
+    n_trials: int = 25,
+    tuning_splits: int = 3,
+    final_splits: int = 5,
+    output_dir: Path = DEFAULT_TUNING_OUTPUT_DIR,
+) -> FinalTuningResult:
+    """Run the real tuning stage followed by a clean five-fold confirmation."""
+    tuning_result = run_optuna_tuning(
+        X,
+        y,
+        n_trials=n_trials,
+        n_splits=tuning_splits,
+        output_dir=output_dir,
+    )
+    final_cv = run_final_cross_validation(
+        X,
+        y,
+        best_params=tuning_result.best_params,
+        n_splits=final_splits,
+    )
+    beats_benchmark = (
+        final_cv["mean_auc"] > FROZEN_FEATURE_BENCHMARK_MEAN_AUC
+    )
+
+    print()
+    print("=" * 70)
+    print("FINAL 5-FOLD CONFIRMATION")
+    print("=" * 70)
+    print(
+        "Frozen feature benchmark: "
+        f"{FROZEN_FEATURE_BENCHMARK_MEAN_AUC:.6f} "
+        f"± {FROZEN_FEATURE_BENCHMARK_STD_AUC:.6f}"
+    )
+    print(
+        "Tuned final CV: "
+        f"{final_cv['mean_auc']:.6f} ± {final_cv['std_auc']:.6f}"
+    )
+    print(
+        "Mean AUC difference: "
+        f"{final_cv['mean_auc'] - FROZEN_FEATURE_BENCHMARK_MEAN_AUC:+.6f}"
+    )
+    print(f"Candidate beats benchmark: {beats_benchmark}")
+
+    result = FinalTuningResult(
+        tuning=tuning_result,
+        final_cv=final_cv,
+        beats_frozen_feature_benchmark=beats_benchmark,
+    )
+    save_final_validation_results(result, output_dir=output_dir)
+    return result
+
+
+def save_optuna_results(
+    result: TuningResult,
+    *,
+    output_dir: Path,
+) -> None:
+    """Save trial history and the selected three-fold candidate for review."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result.study.trials_dataframe().to_csv(
+        output_dir / "optuna_trials.csv",
+        index=False,
+    )
+    (output_dir / "best_params.json").write_text(
+        json.dumps(
+            {
+                "best_trial_number": result.study.best_trial.number,
+                "best_3fold_mean_auc": result.best_score,
+                "best_params": result.best_params,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def save_final_validation_results(
+    result: FinalTuningResult,
+    *,
+    output_dir: Path,
+) -> None:
+    """Save the independent five-fold confirmation and benchmark comparison."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result.final_cv["cv_results"].to_csv(
+        output_dir / "final_5fold_results.csv",
+        index=False,
+    )
+    (output_dir / "final_5fold_summary.json").write_text(
+        json.dumps(
+            {
+                "frozen_feature_benchmark_mean_auc": (
+                    FROZEN_FEATURE_BENCHMARK_MEAN_AUC
+                ),
+                "frozen_feature_benchmark_std_auc": (
+                    FROZEN_FEATURE_BENCHMARK_STD_AUC
+                ),
+                "final_5fold_mean_auc": result.final_cv["mean_auc"],
+                "final_5fold_std_auc": result.final_cv["std_auc"],
+                "best_params": result.tuning.best_params,
+                "beats_frozen_feature_benchmark": (
+                    result.beats_frozen_feature_benchmark
+                ),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
